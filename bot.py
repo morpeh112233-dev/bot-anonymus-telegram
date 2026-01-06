@@ -1,5 +1,3 @@
-[file name]: bot.py
-[file content begin]
 import logging
 import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
