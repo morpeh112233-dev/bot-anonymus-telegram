@@ -1,3 +1,4 @@
+
 services:
   - type: web
     name: telegram-anon-bot
@@ -16,7 +17,3 @@ services:
           property: connectionString
       - key: PYTHON_VERSION
         value: "3.11.0"
-
-databases:
-  - name: anonymous-bot-db
-    plan: free
