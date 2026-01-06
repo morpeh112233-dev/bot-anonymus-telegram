@@ -1,3 +1,5 @@
+[file name]: bot.py
+[file content begin]
 import logging
 import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -194,7 +196,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.save_admin_message_id(question_id, admin_message.message_id)
             sent_to_admins.append(admin_id)
             
-            logger.info(f"✅ Вопрос #{question_id} отправлен админу {admin_id}")
+            logger.info(f"✅ Вопрос #{question_id} отправлен админу {admin_id} (message_id: {admin_message.message_id})")
             
         except Exception as e:
             logger.error(f"❌ Не удалось отправить вопрос админу {admin_id}: {e}")
@@ -226,18 +228,26 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Обработка ответов админов (reply на сообщение)"""
     user = update.effective_user
     
+    logger.info(f"🔍 Получено reply сообщение от пользователя {user.id}")
+    
     # Проверяем, что это админ
     if user.id not in Config.ADMIN_IDS:
+        logger.warning(f"⚠️ Неадмин {user.id} пытается ответить на вопрос")
         await update.message.reply_text("❌ У вас нет прав для ответа на вопросы.")
         return
     
+    logger.info(f"✅ Это админ {user.id} ({user.first_name})")
+    
     # Проверяем, что это reply на сообщение
     if not update.message.reply_to_message:
+        logger.warning(f"⚠️ Админ {user.id} отправил не reply сообщение")
         await update.message.reply_text("ℹ️ Чтобы ответить на вопрос, используйте reply на сообщение с вопросом.")
         return
     
     admin_message_id = update.message.reply_to_message.message_id
     answer_text = update.message.text
+    
+    logger.info(f"✅ Это reply на сообщение {admin_message_id}")
     
     # Проверяем длину ответа
     if len(answer_text) > 4000:
@@ -248,8 +258,11 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     question = db.get_user_by_admin_message(admin_message_id)
     
     if not question:
+        logger.error(f"❌ Вопрос не найден для admin_message_id: {admin_message_id}")
         await update.message.reply_text("❌ Не удалось найти вопрос. Возможно, он был удален или уже отвечен.")
         return
+    
+    logger.info(f"✅ Найден вопрос #{question['id']} для user_id: {question['user_id']}")
     
     # Отправляем ответ пользователю
     try:
@@ -260,14 +273,18 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🕐 <i>Ответ получен: {update.message.date.strftime('%d.%m.%Y %H:%M')}</i>\n\n"
             f"❓ <b>Есть еще вопросы?</b>\n"
-            f"Просто напишите следуюший вопрос в этот чат!"
+            f"Просто напишите следующий вопрос в этот чат!"
         )
         
-        await context.bot.send_message(
+        logger.info(f"📤 Пытаюсь отправить сообщение пользователю {question['user_id']}")
+        
+        user_message = await context.bot.send_message(
             chat_id=question['user_id'],
             text=response_to_user,
             parse_mode='HTML'
         )
+        
+        logger.info(f"✅ Сообщение отправлено пользователю {question['user_id']}, message_id: {user_message.message_id}")
         
         # Отмечаем в БД как отвеченный
         db.mark_as_answered(question['id'], answer_text)
@@ -308,10 +325,10 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.info(f"✅ Админ {user.id} ответил на вопрос #{question['id']}")
                     
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки ответа: {e}")
+        logger.error(f"❌ Ошибка отправки ответа: {e}", exc_info=True)
         error_text = (
             f"❌ <b>Не удалось отправить ответ</b>\n\n"
-            f"Ошибка: {str(e)[:100]}...\n\n"
+            f"Ошибка: {str(e)}\n\n"
             f"<i>Возможно, пользователь заблокировал бота</i>"
         )
         await update.message.reply_text(error_text, parse_mode='HTML')
@@ -386,6 +403,62 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=stats_text,
             parse_mode='HTML'
         )
+    
+    elif data == "refresh_stats":
+        stats = db.get_stats()
+        stats_text = (
+            f"📊 <b>СТАТИСТИКА БОТА</b>\n\n"
+            f"📈 Всего вопросов: {stats['total']}\n"
+            f"✅ Отвечено: {stats['answered']}\n"
+            f"⏳ Ожидают ответа: {stats['pending']}\n"
+            f"📅 Процент ответов: {(stats['answered']/stats['total']*100 if stats['total'] > 0 else 0):.1f}%\n\n"
+            f"<i>Обновлено: {query.message.date.strftime('%d.%m.%Y %H:%M')}</i>"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Обновить", callback_data="refresh_stats"),
+                InlineKeyboardButton("📋 Неотвеченные", callback_data="show_pending")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text=stats_text,
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    elif data == "show_pending":
+        pending_questions = db.get_pending_questions()
+        
+        if not pending_questions:
+            await query.edit_message_text("✅ <b>Нет неотвеченных вопросов!</b>\n\nВсе вопросы обработаны.", parse_mode='HTML')
+            return
+        
+        pending_text = f"⏳ <b>НЕОТВЕЧЕННЫЕ ВОПРОСЫ</b> ({len(pending_questions)})\n\n"
+        
+        for i, question in enumerate(pending_questions[:10], 1):  # Ограничиваем 10 вопросами
+            question_preview = question['question_text'][:100] + "..." if len(question['question_text']) > 100 else question['question_text']
+            pending_text += (
+                f"{i}. <b>#{question['id']}</b>\n"
+                f"📝 {html.escape(question_preview)}\n"
+                f"🕐 {question['asked_at'].strftime('%d.%m %H:%M')}\n\n"
+            )
+        
+        if len(pending_questions) > 10:
+            pending_text += f"\n<i>... и еще {len(pending_questions) - 10} вопросов</i>"
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Назад к статистике", callback_data="refresh_stats")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text=pending_text,
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Статистика (только для админов)"""
@@ -448,7 +521,7 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик ошибок"""
-    logger.error(f"❌ Ошибка при обработке обновления: {context.error}")
+    logger.error(f"❌ Ошибка при обработке обновления: {context.error}", exc_info=True)
     
     if update and update.effective_message:
         try:
@@ -465,7 +538,14 @@ def main():
     # Создаем Application
     application = Application.builder().token(Config.BOT_TOKEN).build()
     
-    # Регистрируем обработчики команд
+    # СНАЧАЛА регистрируем обработчик ответов админов (REPLY)
+    # Это должно быть ПЕРВЫМ, так как имеет более специфичные фильтры
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.ChatType.PRIVATE & filters.REPLY,
+        handle_admin_reply
+    ))
+    
+    # ЗАТЕМ регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("rules", rules_command))
@@ -475,16 +555,11 @@ def main():
     # Регистрируем обработчик inline-кнопок
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    # Регистрируем обработчики сообщений
+    # ПОСЛЕДНИМ регистрируем общий обработчик текстовых сообщений
+    # Он должен быть ПОСЛЕДНИМ, так как перехватывает все остальное
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         handle_message
-    ))
-    
-    # Обработчик ответов админов
-    application.add_handler(MessageHandler(
-        filters.TEXT & filters.ChatType.PRIVATE & filters.REPLY,
-        handle_admin_reply
     ))
     
     # Обработчик ошибок
@@ -499,3 +574,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+[file content end]
